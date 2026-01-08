@@ -1,11 +1,14 @@
 import os
+import re
 from pyrogram import Client, filters
 from config import BOT_TOKEN, API_ID, API_HASH
+
+# ================= BASIC SETUP =================
 
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB limit
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
 
 app = Client(
     "ulp_combo_500mb",
@@ -14,19 +17,67 @@ app = Client(
     api_hash=API_HASH
 )
 
-@app.on_message(filters.command("start"))
+# ================= HEURISTIC LOGIC =================
+
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+def is_url(token: str) -> bool:
+    t = token.lower()
+    return t.startswith("http") or t.startswith("www.") or "/" in t
+
+def extract_pair(line: str):
+    # split by colon
+    parts = [p.strip() for p in line.split(":")]
+
+    # remove empty tokens
+    parts = [p for p in parts if p]
+    if not parts:
+        return None
+
+    # remove obvious URL / context parts
+    parts = [p for p in parts if not is_url(p)]
+    if not parts:
+        return None
+
+    # 1️⃣ email-first strategy
+    email_index = None
+    for i, p in enumerate(parts):
+        if EMAIL_RE.match(p):
+            email_index = i
+            break
+
+    if email_index is not None:
+        # password = next meaningful token after email
+        for j in range(email_index + 1, len(parts)):
+            pwd = parts[j]
+            if len(pwd) >= 3:
+                return f"{parts[email_index]}:{pwd}"
+        return None
+
+    # 2️⃣ fallback: username + last token
+    if len(parts) >= 2:
+        user = parts[0]
+        pwd = parts[-1]
+        if len(pwd) >= 3:
+            return f"{user}:{pwd}"
+
+    return None
+
+# ================= BOT COMMANDS =================
+
+@app.on_message(filters.private & filters.command("start"))
 async def start(_, message):
     await message.reply_text(
         "✅ **Bot is ONLINE**\n\n"
-        "ULP → Combo Converter (500 MB)\n\n"
+        "ULP → Combo Converter (≈90% heuristic)\n\n"
         "📂 Send ONE `.txt` ULP file\n"
         "📏 Max size: 500 MB\n"
-        "🔄 Format: email|password|extra\n"
-        "📤 Output: email:password\n\n"
+        "🔄 Supports mixed RAW logs (colon based)\n"
+        "📤 Output: email/username:password\n\n"
         "⚠️ Send only one file at a time"
     )
 
-@app.on_message(filters.document)
+@app.on_message(filters.private & filters.document)
 async def handle_ulp(_, message):
     doc = message.document
 
@@ -54,19 +105,12 @@ async def handle_ulp(_, message):
         for line in f:
             total_lines += 1
             line = line.strip()
-
-            if "|" not in line:
+            if not line:
                 continue
 
-            parts = line.split("|", 2)
-            if len(parts) < 2:
-                continue
-
-            email = parts[0].strip()
-            password = parts[1].strip()
-
-            if email and password:
-                combos.add(f"{email}:{password}")
+            pair = extract_pair(line)
+            if pair:
+                combos.add(pair)
 
     if not combos:
         await message.reply_text("❌ No valid combos found")
@@ -82,12 +126,12 @@ async def handle_ulp(_, message):
         caption=(
             "✅ **Conversion Completed**\n\n"
             f"📄 Total Lines: {total_lines}\n"
-            f"🎯 Unique Combos: {len(combos)}"
+            f"🎯 Extracted Combos: {len(combos)}"
         )
     )
 
     os.remove(ulp_path)
     os.remove(combo_path)
 
-print("ULP Combo Bot (500MB) is running...")
+print("ULP Combo Bot (500MB | Heuristic Mode) is running...")
 app.run()
